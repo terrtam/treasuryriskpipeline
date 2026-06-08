@@ -1,0 +1,99 @@
+@startuml
+hide circle
+skinparam linetype ortho
+
+entity "treasury.liquidity_snapshots" as liquidity_snapshots {
+  * snapshot_date : date
+  * legal_entity_id : text
+  * run_id : text
+  --
+  window_start_utc : timestamp
+  window_end_utc : timestamp
+  currency : char(3)
+  transaction_count : bigint
+  inbound_count : bigint
+  outbound_count : bigint
+  total_inbound_usd : numeric(20,6)
+  total_outbound_usd : numeric(20,6)
+  net_liquidity_usd : numeric(20,6)
+  pipeline_version : text
+  dataset_version : text
+  created_at_utc : timestamp
+}
+
+entity "treasury.transactions" as transactions {
+  * transaction_id : text
+  --
+  timestamp : timestamp
+  legal_entity_id : text
+  currency : char(3)
+  amount : numeric(20,6)
+  direction : transaction_direction
+  created_at_utc : timestamp
+}
+
+entity "treasury.fx_rates" as fx_rates {
+  * date : date
+  * base_currency : char(3)
+  * quote_currency : char(3)
+  --
+  fx_rate : numeric(20,10)
+  created_at_utc : timestamp
+}
+
+entity "treasury.audit_events" as audit_events {
+  * event_id : uuid
+  --
+  event_type : audit_event_type
+  run_id : text
+  pipeline_version : text
+  dataset_version : text
+  source_file : text
+  transaction_id : text
+  legal_entity_id : text
+  event_timestamp_utc : timestamp
+  processing_timestamp_utc : timestamp
+  currency : char(3)
+  amount_original : numeric(20,6)
+  fx_rate_applied : numeric(20,10)
+  amount_usd : numeric(20,6)
+  direction : text
+  window_start_utc : timestamp
+  window_end_utc : timestamp
+  status : audit_status
+  error_code : text
+  error_message : text
+  created_at_utc : timestamp
+}
+
+transactions }o--|| fx_rates : matches by date + currency
+
+note right of liquidity_snapshots
+Primary key:
+(snapshot_date, legal_entity_id, run_id)
+
+Reporting table for liquidity dashboards.
+end note
+
+note right of transactions
+Primary key:
+(transaction_id)
+
+Canonical validated transaction source table.
+end note
+
+note right of fx_rates
+Primary key:
+(date, base_currency, quote_currency)
+
+Canonical validated FX reference table.
+end note
+
+note right of audit_events
+Primary key:
+(event_id)
+
+Relational audit capture for pipeline events.
+end note
+
+@enduml
