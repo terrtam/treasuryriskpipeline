@@ -1,0 +1,25 @@
+@startuml
+
+actor "External Source" as Source
+actor "Developer" as Dev
+
+rectangle "Ingestion Component" {
+
+  usecase "Extract Raw Data" as UC1
+  usecase "Parse Input Files" as UC2
+  usecase "Clean Data" as UC3
+  usecase "Normalize Fields" as UC4
+  usecase "Validate Records" as UC5
+  usecase "Load Transactions" as UC6
+}
+
+Source --> UC1
+Dev --> UC6
+
+UC1 --> UC2 : <<include>>
+UC2 --> UC3 : <<include>>
+UC3 --> UC4 : <<include>>
+UC4 --> UC5 : <<include>>
+UC5 --> UC6 : <<include>>
+
+@enduml

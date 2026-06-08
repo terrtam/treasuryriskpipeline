@@ -1,0 +1,25 @@
+@startuml
+
+actor "Developer" as Dev
+
+rectangle "Data Generator" {
+
+  usecase "Configure Dataset Size" as UC1
+  usecase "Generate Transactions" as UC2
+  usecase "Generate FX Rates" as UC3
+  usecase "Generate Liquidity Scenarios" as UC4
+  usecase "Export Test Data" as UC5
+}
+
+Dev --> UC1
+Dev --> UC5
+
+UC1 --> UC2 : <<include>>
+UC1 --> UC3 : <<include>>
+UC1 --> UC4 : <<include>>
+
+UC2 --> UC5 : <<include>>
+UC3 --> UC5 : <<include>>
+UC4 --> UC5 : <<include>>
+
+@enduml

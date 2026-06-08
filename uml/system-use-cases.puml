@@ -1,0 +1,41 @@
+@startuml
+left to right direction
+
+actor "Analyst" as Analyst
+actor "Developer" as Dev
+actor "External Data Source" as Source
+
+rectangle "Treasury Pipeline" {
+
+  usecase "Ingest Transactions" as UC1
+  usecase "Validate Data" as UC2
+  usecase "Normalize Records" as UC3
+  usecase "Store Transactions" as UC4
+
+  usecase "Calculate FX Conversions" as UC5
+  usecase "Generate Liquidity Metrics" as UC6
+  usecase "Produce Aggregations" as UC7
+
+  usecase "Generate Synthetic Data" as UC8
+  usecase "Run Pipeline" as UC9
+  usecase "View Results" as UC10
+}
+
+Source --> UC1
+
+Dev --> UC8
+Dev --> UC9
+
+Analyst --> UC10
+Analyst --> UC6
+Analyst --> UC7
+
+UC1 --> UC2 : <<include>>
+UC2 --> UC3 : <<include>>
+UC3 --> UC4 : <<include>>
+
+UC4 --> UC5 : <<include>>
+UC5 --> UC6 : <<include>>
+UC6 --> UC7 : <<include>>
+
+@enduml

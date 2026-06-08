@@ -1,0 +1,19 @@
+@startuml
+
+actor "Analyst" as Analyst
+
+rectangle "FX Component" {
+
+  usecase "Load FX Rates" as UC1
+  usecase "Convert Transaction Amounts" as UC2
+  usecase "Validate FX Availability" as UC3
+  usecase "Calculate Base Currency Values" as UC4
+}
+
+Analyst --> UC2
+
+UC2 --> UC1 : <<include>>
+UC2 --> UC3 : <<include>>
+UC2 --> UC4 : <<include>>
+
+@enduml

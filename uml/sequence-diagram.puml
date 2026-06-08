@@ -1,0 +1,66 @@
+@startuml
+
+actor Developer
+actor Analyst
+
+participant "Data Generator" as DG
+participant "Ingestion Service (ETL)" as ING
+participant "Validation Layer" as VAL
+participant "FX Service" as FX
+participant "Liquidity Engine (Spark Job)" as LE
+
+database "PostgreSQL (System of Record)" as PG
+database "Elasticsearch (Query / Search Index)" as ES
+
+participant "Reporting / API Layer" as API
+
+== Data Generation ==
+
+Developer -> DG : Generate synthetic transactions
+DG --> ING : batch transaction dataset
+
+== Ingestion & Validation ==
+
+ING -> VAL : Validate + clean records
+VAL --> ING : validated transactions
+
+== Persistence (Source of Truth) ==
+
+ING -> PG : write raw + cleaned transactions
+PG --> ING : ack
+
+== FX Normalization ==
+
+ING -> FX : convert to base currency (USD)
+FX --> ING : normalized transactions
+
+ING -> PG : store USD-normalized transactions
+PG --> ING : ack
+
+== Indexing Layer ==
+
+ING -> ES : index transactions (search optimized docs)
+ES --> ING : index confirmed
+
+== Liquidity Computation ==
+
+ING -> LE : send normalized dataset
+
+LE -> LE : compute inflows/outflows
+LE -> LE : rolling 30-day liquidity
+LE -> PG : persist aggregated metrics
+PG --> LE : ack
+
+LE -> ES : index liquidity metrics (for fast dashboards)
+ES --> LE : ack
+
+== Serving Layer ==
+
+Analyst -> API : request dashboard / query
+
+API -> ES : query transactions + metrics
+ES --> API : fast aggregated results
+
+API --> Analyst : dashboard response
+
+@enduml

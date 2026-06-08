@@ -1,0 +1,25 @@
+@startuml
+
+actor "Ingestion Service" as Ingest
+actor "Analyst" as Analyst
+
+rectangle "Transaction Contract" {
+
+  usecase "Create Transaction Record" as UC1
+  usecase "Validate Required Fields" as UC2
+  usecase "Validate Monetary Values" as UC3
+  usecase "Validate Currency Codes" as UC4
+  usecase "Persist Transaction" as UC5
+  usecase "Retrieve Transaction" as UC6
+}
+
+Ingest --> UC1
+
+UC1 --> UC2 : <<include>>
+UC1 --> UC3 : <<include>>
+UC1 --> UC4 : <<include>>
+UC1 --> UC5 : <<include>>
+
+Analyst --> UC6
+
+@enduml

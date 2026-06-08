@@ -1,0 +1,21 @@
+@startuml
+
+actor "Analyst" as Analyst
+
+rectangle "Liquidity Engine" {
+
+  usecase "Calculate Daily Cash Position" as UC1
+  usecase "Calculate Inflows" as UC2
+  usecase "Calculate Outflows" as UC3
+  usecase "Generate Liquidity Metrics" as UC4
+  usecase "Produce Summary Reports" as UC5
+}
+
+Analyst --> UC4
+Analyst --> UC5
+
+UC4 --> UC1 : <<include>>
+UC4 --> UC2 : <<include>>
+UC4 --> UC3 : <<include>>
+
+@enduml
