@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -41,6 +41,8 @@ class IngestionBatchResult:
     records: list[Any]
     rejections: RejectionReport
     file_errors: list[str]
+    file_error_sources: list[tuple[str, str]] = field(default_factory=list)
+    status: str = "SUCCESS"
 
 
 def _parse_timestamp(value: Any) -> datetime:
@@ -89,6 +91,8 @@ def _validate_direction(value: Any) -> str:
 def discover_ingestion_files(data_feeds_dir: str | Path, dataset: str) -> list[Path]:
     root = Path(data_feeds_dir)
     pattern = TRANSACTION_FILE_PATTERN if dataset == "transactions" else FX_FILE_PATTERN
+    if root.is_file():
+        return [root] if root.match(pattern) else []
     return sorted(root.glob(pattern))
 
 
@@ -101,40 +105,64 @@ def load_parquet_rows(path: str | Path) -> list[dict[str, Any]]:
     return table.to_pylist()
 
 
-def ingest_transaction_files(data_feeds_dir: str | Path) -> IngestionBatchResult:
-    records: list[ValidatedTransaction] = []
-    rejections = RejectionReport()
+def _collect_rows(file_paths: Iterable[Path]) -> tuple[list[dict[str, Any]], list[str], list[tuple[str, str]]]:
+    rows: list[dict[str, Any]] = []
     file_errors: list[str] = []
+    file_error_sources: list[tuple[str, str]] = []
 
-    for file_path in discover_ingestion_files(data_feeds_dir, "transactions"):
+    for file_path in file_paths:
         try:
-            rows = load_parquet_rows(file_path)
+            rows.extend(load_parquet_rows(file_path))
         except ValueError as exc:
-            file_errors.append(str(exc))
-            continue
-        valid_rows, batch_rejections = validate_transaction_batch(rows)
-        records.extend(valid_rows)
-        rejections.rejections.extend(batch_rejections.rejections)
+            message = str(exc)
+            file_errors.append(message)
+            file_error_sources.append((str(file_path), message))
 
-    return IngestionBatchResult(records=records, rejections=rejections, file_errors=file_errors)
+    return rows, file_errors, file_error_sources
+
+
+def _derive_transaction_status(valid_row_count: int, rejection_count: int, file_error_count: int) -> str:
+    if file_error_count:
+        return "FAILED"
+    if rejection_count and valid_row_count:
+        return "DEGRADED"
+    if rejection_count:
+        return "FAILED"
+    return "SUCCESS"
+
+
+def _derive_fx_status(valid_row_count: int, rejection_count: int, file_error_count: int) -> str:
+    if file_error_count or rejection_count:
+        return "FAILED"
+    if valid_row_count:
+        return "SUCCESS"
+    return "FAILED"
+
+
+def ingest_transaction_files(data_feeds_dir: str | Path) -> IngestionBatchResult:
+    rows, file_errors, file_error_sources = _collect_rows(discover_ingestion_files(data_feeds_dir, "transactions"))
+    records, rejections = validate_transaction_batch(rows)
+    status = _derive_transaction_status(len(records), len(rejections), len(file_errors))
+    return IngestionBatchResult(
+        records=records,
+        rejections=rejections,
+        file_errors=file_errors,
+        file_error_sources=file_error_sources,
+        status=status,
+    )
 
 
 def ingest_fx_files(data_feeds_dir: str | Path) -> IngestionBatchResult:
-    records: list[ValidatedFXRate] = []
-    rejections = RejectionReport()
-    file_errors: list[str] = []
-
-    for file_path in discover_ingestion_files(data_feeds_dir, "fx"):
-        try:
-            rows = load_parquet_rows(file_path)
-        except ValueError as exc:
-            file_errors.append(str(exc))
-            continue
-        valid_rows, batch_rejections = validate_fx_batch(rows)
-        records.extend(valid_rows)
-        rejections.rejections.extend(batch_rejections.rejections)
-
-    return IngestionBatchResult(records=records, rejections=rejections, file_errors=file_errors)
+    rows, file_errors, file_error_sources = _collect_rows(discover_ingestion_files(data_feeds_dir, "fx"))
+    records, rejections = validate_fx_batch(rows)
+    status = _derive_fx_status(len(records), len(rejections), len(file_errors))
+    return IngestionBatchResult(
+        records=records,
+        rejections=rejections,
+        file_errors=file_errors,
+        file_error_sources=file_error_sources,
+        status=status,
+    )
 
 
 def validate_transaction_batch(rows: Iterable[Mapping[str, Any]]) -> tuple[list[ValidatedTransaction], RejectionReport]:

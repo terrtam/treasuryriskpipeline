@@ -242,14 +242,13 @@ TreasuryPipeline/
 │   ├── fx_rates_*.parquet             # FX reference lookup table
 │
 ├── src/
+│   ├── config/                        # Runtime configuration helpers
+│   │   ├── spark_config.py            # Spark session configuration
+│   │   └── db_config.py               # Database connection settings
 │   ├── DistributedDataTransformations.py  # Main Spark ETL pipeline
 │
 ├── sql/
 │   ├── schema.sql                      # PostgreSQL schema + indexes
-│
-├── config/                            # (Optional extension layer)
-│   ├── spark_config.py                # Spark session configuration
-│   ├── db_config.py                   # Database connection settings
 │
 ├── tests/                             # (Optional extension layer)
 │   ├── test_transformations.py        # ETL validation tests
@@ -277,6 +276,21 @@ Responsibilities:
 * Calculate rolling liquidity windows
 * Write results to PostgreSQL
 * Write audit records to Elasticsearch
+
+#### config/
+
+Runtime configuration helpers live under `src/config/`.
+
+The config helpers load a local `.env` file if present, then fall back to the current process environment.
+
+* `spark_config.py` loads Spark session settings from environment variables
+* `db_config.py` loads PostgreSQL connection settings from environment variables
+
+Example local setup:
+
+```powershell
+Copy-Item .env.example .env
+```
 
 ---
 
