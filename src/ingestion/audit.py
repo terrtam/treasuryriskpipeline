@@ -7,6 +7,7 @@ from typing import Any, Mapping
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from .rejections import Rejection, RejectionReport
+from src.liquidity.window import LiquiditySnapshot
 
 AUDIT_NAMESPACE = uuid5(NAMESPACE_URL, "treasury-pipeline/ingestion-audit")
 
@@ -176,3 +177,52 @@ def build_file_failure_event(
         error_code="INGESTION_FILE_READ_ERROR",
         error_message=error_message,
     )
+
+
+def build_snapshot_written_audit_events(
+    snapshots: list[LiquiditySnapshot],
+    *,
+    run_id: str,
+    pipeline_version: str,
+    dataset_version: str,
+    processing_timestamp_utc: datetime,
+    source_file: str | None = None,
+) -> list[AuditEvent]:
+    events: list[AuditEvent] = []
+    for snapshot in snapshots:
+        event_id = _make_event_id(
+            run_id,
+            pipeline_version,
+            dataset_version,
+            str(snapshot.snapshot_date),
+            snapshot.legal_entity_id,
+            snapshot.window_start_utc.isoformat(),
+            snapshot.window_end_utc.isoformat(),
+            str(snapshot.net_liquidity_usd),
+            "snapshot_written",
+        )
+        events.append(
+            AuditEvent(
+                event_id=event_id,
+                event_type="snapshot_written",
+                run_id=run_id,
+                pipeline_version=pipeline_version,
+                dataset_version=dataset_version,
+                source_file=source_file,
+                transaction_id=None,
+                legal_entity_id=snapshot.legal_entity_id,
+                event_timestamp_utc=snapshot.window_end_utc,
+                processing_timestamp_utc=processing_timestamp_utc,
+                currency=snapshot.currency,
+                amount_original=None,
+                fx_rate_applied=None,
+                amount_usd=snapshot.net_liquidity_usd,
+                direction=None,
+                window_start_utc=snapshot.window_start_utc,
+                window_end_utc=snapshot.window_end_utc,
+                status="SUCCESS",
+                error_code=None,
+                error_message=None,
+            )
+        )
+    return events

@@ -11,6 +11,7 @@ from .validator import ValidatedFXRate, ValidatedTransaction
 
 if TYPE_CHECKING:
     from src.fx.conversion import USDNormalizedTransaction
+    from src.liquidity.window import LiquiditySnapshot
 
 
 class SupportsCursor(Protocol):
@@ -31,6 +32,7 @@ class SupportsConnection(Protocol):
 class PostgresSinkConfig:
     transaction_table: str = "treasury.transactions"
     usd_table: str = "treasury.usd"
+    liquidity_table: str = "treasury.liquidity_snapshots"
     fx_table: str = "treasury.fx_rates"
     audit_table: str = "treasury.audit_events"
 
@@ -76,6 +78,27 @@ def _usd_payload(record: USDNormalizedTransaction) -> tuple[Any, ...]:
         record.direction,
         record.fx_rate_applied,
         record.amount_usd,
+    )
+
+
+def _liquidity_payload(record: LiquiditySnapshot) -> tuple[Any, ...]:
+    window_start_utc = record.window_start_utc.astimezone(timezone.utc).replace(tzinfo=None)
+    window_end_utc = record.window_end_utc.astimezone(timezone.utc).replace(tzinfo=None)
+    return (
+        record.snapshot_date,
+        record.legal_entity_id,
+        window_start_utc,
+        window_end_utc,
+        record.currency,
+        record.transaction_count,
+        record.inbound_count,
+        record.outbound_count,
+        record.total_inbound_usd,
+        record.total_outbound_usd,
+        record.net_liquidity_usd,
+        record.run_id,
+        record.pipeline_version,
+        record.dataset_version,
     )
 
 
@@ -238,6 +261,75 @@ class PostgresUSDSink:
                 on conflict (transaction_id) do nothing
                 """,
                 [_usd_payload(record) for record in records],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+class PostgresLiquiditySink:
+    def __init__(self, connection_factory: Callable[[], SupportsConnection], config: PostgresSinkConfig | None = None):
+        self._connection_factory = connection_factory
+        self._config = config or PostgresSinkConfig()
+
+    def write_liquidity_snapshots(self, records: list[LiquiditySnapshot]) -> None:
+        if not records:
+            return
+        conn = self._connection_factory()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                create schema if not exists treasury
+                """
+            )
+            cur.execute(
+                f"""
+                create table if not exists {self._config.liquidity_table} (
+                    snapshot_date date not null,
+                    legal_entity_id text not null,
+                    window_start_utc timestamp not null,
+                    window_end_utc timestamp not null,
+                    currency char(3) not null default 'USD',
+                    transaction_count bigint not null,
+                    inbound_count bigint not null,
+                    outbound_count bigint not null,
+                    total_inbound_usd numeric(20, 6) not null,
+                    total_outbound_usd numeric(20, 6) not null,
+                    net_liquidity_usd numeric(20, 6) not null,
+                    run_id text not null,
+                    pipeline_version text not null,
+                    dataset_version text not null,
+                    created_at_utc timestamp not null default (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
+                    constraint liquidity_snapshots_currency_chk check (currency = 'USD'),
+                    constraint liquidity_snapshots_window_chk check (window_end_utc >= window_start_utc),
+                    primary key (snapshot_date, legal_entity_id, run_id)
+                )
+                """
+            )
+            cur.executemany(
+                f"""
+                insert into {self._config.liquidity_table} (
+                    snapshot_date,
+                    legal_entity_id,
+                    window_start_utc,
+                    window_end_utc,
+                    currency,
+                    transaction_count,
+                    inbound_count,
+                    outbound_count,
+                    total_inbound_usd,
+                    total_outbound_usd,
+                    net_liquidity_usd,
+                    run_id,
+                    pipeline_version,
+                    dataset_version
+                ) values (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
+                on conflict (snapshot_date, legal_entity_id, run_id) do nothing
+                """,
+                [_liquidity_payload(record) for record in records],
             )
             conn.commit()
         finally:

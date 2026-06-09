@@ -1,15 +1,23 @@
 # Ingestion Fixture Data
 
-This folder contains sample parquet inputs for the ingestion pipeline.
+This folder is the landing zone for generated parquet inputs consumed by the ingestion pipeline.
 
-Files:
+Generated artifacts:
 
-- `daily_transactions_001.parquet`
-- `fx_rates_001.parquet`
+- `daily_transactions_*.parquet`
+- `fx_rates_*.parquet`
 
-The transaction file includes 5 rows total:
+The parquet files are ignored by git so local demo datasets can be regenerated freely.
 
-- 4 valid rows that should load into PostgreSQL
-- 1 invalid row that should be rejected and produce an audit event
+To create a richer liquidity test set with multiple dates, currencies, and legal entities:
 
-The FX file includes valid USD-based FX reference rows so the full ingestion batch can run.
+```powershell
+python -m src.data_generation --output-dir data_feeds --seed 42 --start-date 2026-01-01 --days 90 --transactions 1500 --entities 25 --currencies 20 --transaction-files 3 --fx-files 3
+```
+
+The generated dataset is designed to exercise:
+
+- multi-entity aggregation
+- multi-currency FX normalization
+- trailing 30-day rolling liquidity windows
+- deterministic reruns with the same seed and configuration

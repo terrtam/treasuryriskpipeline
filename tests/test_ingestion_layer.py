@@ -12,6 +12,7 @@ from src.ingestion import (
     AuditEvent,
     InMemoryAuditSink,
     InMemoryFXSink,
+    InMemoryLiquiditySink,
     InMemoryUSDSink,
     InMemoryTransactionSink,
     IngestionSinks,
@@ -23,7 +24,13 @@ from src.ingestion import (
 )
 from src.ingestion.batch import IngestionBatchConfig, run_ingestion_batch
 from src.ingestion.cli import build_production_sinks
-from src.ingestion.external_sinks import ElasticsearchAuditSink, PostgresAuditSink, PostgresFXSink, PostgresTransactionSink
+from src.ingestion.external_sinks import (
+    ElasticsearchAuditSink,
+    PostgresAuditSink,
+    PostgresFXSink,
+    PostgresLiquiditySink,
+    PostgresTransactionSink,
+)
 
 
 class RecordingCursor:
@@ -192,9 +199,16 @@ def test_run_ingestion_batch_writes_records_and_audit_events(tmp_path):
 
     transaction_sink = InMemoryTransactionSink()
     usd_sink = InMemoryUSDSink()
+    liquidity_sink = InMemoryLiquiditySink()
     fx_sink = InMemoryFXSink()
     audit_sink = InMemoryAuditSink()
-    sinks = IngestionSinks(transactions=transaction_sink, usd=usd_sink, fx_rates=fx_sink, audit=audit_sink)
+    sinks = IngestionSinks(
+        transactions=transaction_sink,
+        usd=usd_sink,
+        liquidity=liquidity_sink,
+        fx_rates=fx_sink,
+        audit=audit_sink,
+    )
 
     result = run_ingestion_batch(
         IngestionBatchConfig(
@@ -210,11 +224,18 @@ def test_run_ingestion_batch_writes_records_and_audit_events(tmp_path):
     assert result.transaction_batch.status == "SUCCESS"
     assert result.fx_batch.status == "SUCCESS"
     assert result.usd_batch.status == "SUCCESS"
+    assert result.liquidity_batch.status == "SUCCESS"
     assert len(transaction_sink.records) == 1
     assert len(usd_sink.records) == 1
     assert usd_sink.records[0].amount_usd == Decimal("10.000000")
+    assert len(liquidity_sink.records) == 1
+    assert liquidity_sink.records[0].net_liquidity_usd == Decimal("10.000000")
     assert len(fx_sink.records) == 1
-    assert audit_sink.events == []
+    assert len(result.audit_events) == 1
+    assert result.audit_events[0].event_type == "snapshot_written"
+    assert result.audit_events[0].legal_entity_id == "LE1"
+    assert audit_sink.events == result.audit_events
+    assert any(write.sink_name == "liquidity" and write.status == "SUCCESS" for write in result.sink_writes)
     assert all(write.status == "SUCCESS" for write in result.sink_writes)
 
 
@@ -236,6 +257,7 @@ def test_run_ingestion_batch_supports_single_transaction_file(tmp_path):
 
     transaction_sink = InMemoryTransactionSink()
     usd_sink = InMemoryUSDSink()
+    liquidity_sink = InMemoryLiquiditySink()
     fx_sink = InMemoryFXSink()
     audit_sink = InMemoryAuditSink()
 
@@ -247,7 +269,13 @@ def test_run_ingestion_batch_supports_single_transaction_file(tmp_path):
             dataset_version="2026-06-07",
             processing_timestamp_utc=datetime(2026, 6, 7, 12, 0, tzinfo=timezone.utc),
         ),
-        sinks=IngestionSinks(transactions=transaction_sink, usd=usd_sink, fx_rates=fx_sink, audit=audit_sink),
+        sinks=IngestionSinks(
+            transactions=transaction_sink,
+            usd=usd_sink,
+            liquidity=liquidity_sink,
+            fx_rates=fx_sink,
+            audit=audit_sink,
+        ),
     )
 
     assert result.transaction_batch.status == "SUCCESS"
@@ -255,9 +283,44 @@ def test_run_ingestion_batch_supports_single_transaction_file(tmp_path):
     assert result.usd_batch.status == "SKIPPED"
     assert len(transaction_sink.records) == 1
     assert len(usd_sink.records) == 0
+    assert len(liquidity_sink.records) == 0
     assert len(fx_sink.records) == 0
     assert len(audit_sink.events) == 0
     assert len(result.sink_writes) == 2
+
+
+def test_postgres_liquidity_sink_records_payloads():
+    connection = RecordingConnection()
+    sink = PostgresLiquiditySink(lambda: connection)
+
+    sink.write_liquidity_snapshots(
+        [
+            type(
+                "Liquidity",
+                (),
+                {
+                    "snapshot_date": date(2026, 6, 7),
+                    "legal_entity_id": "LE1",
+                    "window_start_utc": datetime(2026, 5, 9, 0, 0, tzinfo=timezone.utc),
+                    "window_end_utc": datetime(2026, 6, 7, 23, 59, 59, 999999, tzinfo=timezone.utc),
+                    "currency": "USD",
+                    "transaction_count": 2,
+                    "inbound_count": 1,
+                    "outbound_count": 1,
+                    "total_inbound_usd": Decimal("10.00"),
+                    "total_outbound_usd": Decimal("4.00"),
+                    "net_liquidity_usd": Decimal("6.00"),
+                    "run_id": "run-1",
+                    "pipeline_version": "1.0.0",
+                    "dataset_version": "2026-06-07",
+                },
+            )()
+        ]
+    )
+
+    assert connection.committed is True
+    assert connection.closed is True
+    assert any("treasury.liquidity_snapshots" in statement[0] for statement in connection.cursor_obj.statements)
 
 
 def test_postgres_and_elasticsearch_sink_adapters_record_payloads():

@@ -7,6 +7,7 @@ from .audit import AuditEvent
 from .external_sinks import (
     ElasticsearchAuditSink,
     ElasticsearchSinkConfig,
+    PostgresLiquiditySink,
     PostgresAuditSink,
     PostgresFXSink,
     PostgresSinkConfig,
@@ -17,6 +18,7 @@ from .validator import ValidatedFXRate, ValidatedTransaction
 
 if TYPE_CHECKING:
     from src.fx.conversion import USDNormalizedTransaction
+    from src.liquidity.window import LiquiditySnapshot
 
 
 class TransactionRecordSink(Protocol):
@@ -29,6 +31,10 @@ class FXRecordSink(Protocol):
 
 class USDRecordSink(Protocol):
     def write_usd_transactions(self, records: list[USDNormalizedTransaction]) -> None: ...
+
+
+class LiquiditySnapshotSink(Protocol):
+    def write_liquidity_snapshots(self, records: list[LiquiditySnapshot]) -> None: ...
 
 
 class AuditEventSink(Protocol):
@@ -60,6 +66,14 @@ class InMemoryUSDSink:
 
 
 @dataclass
+class InMemoryLiquiditySink:
+    records: list[LiquiditySnapshot] = field(default_factory=list)
+
+    def write_liquidity_snapshots(self, records: list[LiquiditySnapshot]) -> None:
+        self.records.extend(records)
+
+
+@dataclass
 class InMemoryAuditSink:
     events: list[AuditEvent] = field(default_factory=list)
 
@@ -86,6 +100,7 @@ class CompositeAuditSink:
 class IngestionSinks:
     transactions: TransactionRecordSink
     usd: USDRecordSink
+    liquidity: LiquiditySnapshotSink
     fx_rates: FXRecordSink
     audit: AuditEventSink
 
@@ -94,6 +109,7 @@ def create_default_ingestion_sinks() -> IngestionSinks:
     return IngestionSinks(
         transactions=InMemoryTransactionSink(),
         usd=InMemoryUSDSink(),
+        liquidity=InMemoryLiquiditySink(),
         fx_rates=InMemoryFXSink(),
         audit=InMemoryAuditSink(),
     )
@@ -108,8 +124,15 @@ def create_postgres_ingestion_sinks(
 ):
     transaction_sink = PostgresTransactionSink(transaction_connection_factory, config=postgres_config)
     usd_sink = PostgresUSDSink(transaction_connection_factory, config=postgres_config)
+    liquidity_sink = PostgresLiquiditySink(transaction_connection_factory, config=postgres_config)
     fx_sink = PostgresFXSink(transaction_connection_factory, config=postgres_config)
     postgres_audit_sink = PostgresAuditSink(transaction_connection_factory, config=postgres_config)
     elasticsearch_audit_sink = ElasticsearchAuditSink(audit_elasticsearch_base_url, config=elasticsearch_config)
     audit_sink = CompositeAuditSink([postgres_audit_sink, elasticsearch_audit_sink])
-    return IngestionSinks(transactions=transaction_sink, usd=usd_sink, fx_rates=fx_sink, audit=audit_sink)
+    return IngestionSinks(
+        transactions=transaction_sink,
+        usd=usd_sink,
+        liquidity=liquidity_sink,
+        fx_rates=fx_sink,
+        audit=audit_sink,
+    )
