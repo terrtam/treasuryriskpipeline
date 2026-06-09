@@ -9,10 +9,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from src.ingestion import (
-    IngestionBatchConfig,
     AuditEvent,
     InMemoryAuditSink,
     InMemoryFXSink,
+    InMemoryUSDSink,
     InMemoryTransactionSink,
     IngestionSinks,
     ingest_fx_files,
@@ -20,8 +20,8 @@ from src.ingestion import (
     load_parquet_rows,
     validate_fx_batch,
     validate_transaction_batch,
-    run_ingestion_batch,
 )
+from src.ingestion.batch import IngestionBatchConfig, run_ingestion_batch
 from src.ingestion.cli import build_production_sinks
 from src.ingestion.external_sinks import ElasticsearchAuditSink, PostgresAuditSink, PostgresFXSink, PostgresTransactionSink
 
@@ -183,17 +183,18 @@ def test_run_ingestion_batch_writes_records_and_audit_events(tmp_path):
             {
                 "date": [date(2026, 6, 7)],
                 "base_currency": ["USD"],
-                "quote_currency": ["EUR"],
-                "fx_rate": [Decimal("1.10")],
+                "quote_currency": ["USD"],
+                "fx_rate": [Decimal("1.00")],
             }
         ),
         fx_path,
     )
 
     transaction_sink = InMemoryTransactionSink()
+    usd_sink = InMemoryUSDSink()
     fx_sink = InMemoryFXSink()
     audit_sink = InMemoryAuditSink()
-    sinks = IngestionSinks(transactions=transaction_sink, fx_rates=fx_sink, audit=audit_sink)
+    sinks = IngestionSinks(transactions=transaction_sink, usd=usd_sink, fx_rates=fx_sink, audit=audit_sink)
 
     result = run_ingestion_batch(
         IngestionBatchConfig(
@@ -208,7 +209,10 @@ def test_run_ingestion_batch_writes_records_and_audit_events(tmp_path):
 
     assert result.transaction_batch.status == "SUCCESS"
     assert result.fx_batch.status == "SUCCESS"
+    assert result.usd_batch.status == "SUCCESS"
     assert len(transaction_sink.records) == 1
+    assert len(usd_sink.records) == 1
+    assert usd_sink.records[0].amount_usd == Decimal("10.000000")
     assert len(fx_sink.records) == 1
     assert audit_sink.events == []
     assert all(write.status == "SUCCESS" for write in result.sink_writes)
@@ -231,6 +235,7 @@ def test_run_ingestion_batch_supports_single_transaction_file(tmp_path):
     )
 
     transaction_sink = InMemoryTransactionSink()
+    usd_sink = InMemoryUSDSink()
     fx_sink = InMemoryFXSink()
     audit_sink = InMemoryAuditSink()
 
@@ -242,12 +247,14 @@ def test_run_ingestion_batch_supports_single_transaction_file(tmp_path):
             dataset_version="2026-06-07",
             processing_timestamp_utc=datetime(2026, 6, 7, 12, 0, tzinfo=timezone.utc),
         ),
-        sinks=IngestionSinks(transactions=transaction_sink, fx_rates=fx_sink, audit=audit_sink),
+        sinks=IngestionSinks(transactions=transaction_sink, usd=usd_sink, fx_rates=fx_sink, audit=audit_sink),
     )
 
     assert result.transaction_batch.status == "SUCCESS"
     assert result.fx_batch.status == "SKIPPED"
+    assert result.usd_batch.status == "SKIPPED"
     assert len(transaction_sink.records) == 1
+    assert len(usd_sink.records) == 0
     assert len(fx_sink.records) == 0
     assert len(audit_sink.events) == 0
     assert len(result.sink_writes) == 2

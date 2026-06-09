@@ -32,6 +32,19 @@ entity "treasury.transactions" as transactions {
   created_at_utc : timestamp
 }
 
+entity "treasury.usd" as usd {
+  * transaction_id : text
+  --
+  timestamp : timestamp
+  legal_entity_id : text
+  currency : char(3)
+  amount : numeric(20,6)
+  direction : transaction_direction
+  fx_rate_applied : numeric(20,10)
+  amount_usd : numeric(20,6)
+  created_at_utc : timestamp
+}
+
 entity "treasury.fx_rates" as fx_rates {
   * date : date
   * base_currency : char(3)
@@ -67,6 +80,7 @@ entity "treasury.audit_events" as audit_events {
 }
 
 transactions }o--|| fx_rates : matches by date + currency
+usd }o--|| transactions : derived from transaction_id
 
 note right of liquidity_snapshots
 Primary key:
@@ -80,6 +94,13 @@ Primary key:
 (transaction_id)
 
 Canonical validated transaction source table.
+end note
+
+note right of usd
+Primary key:
+(transaction_id)
+
+USD-normalized transaction table produced by FX conversion.
 end note
 
 note right of fx_rates

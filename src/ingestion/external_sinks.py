@@ -3,11 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Protocol, TYPE_CHECKING
 from urllib import request as urllib_request
 
 from .audit import AuditEvent
 from .validator import ValidatedFXRate, ValidatedTransaction
+
+if TYPE_CHECKING:
+    from src.fx.conversion import USDNormalizedTransaction
 
 
 class SupportsCursor(Protocol):
@@ -27,6 +30,7 @@ class SupportsConnection(Protocol):
 @dataclass(frozen=True)
 class PostgresSinkConfig:
     transaction_table: str = "treasury.transactions"
+    usd_table: str = "treasury.usd"
     fx_table: str = "treasury.fx_rates"
     audit_table: str = "treasury.audit_events"
 
@@ -58,6 +62,20 @@ def _fx_payload(record: ValidatedFXRate) -> tuple[Any, ...]:
         record.base_currency,
         record.quote_currency,
         record.fx_rate,
+    )
+
+
+def _usd_payload(record: USDNormalizedTransaction) -> tuple[Any, ...]:
+    timestamp_utc = record.timestamp.astimezone(timezone.utc).replace(tzinfo=None)
+    return (
+        record.transaction_id,
+        timestamp_utc,
+        record.legal_entity_id,
+        record.currency,
+        record.amount,
+        record.direction,
+        record.fx_rate_applied,
+        record.amount_usd,
     )
 
 
@@ -168,6 +186,58 @@ class PostgresFXSink:
                 on conflict (date, base_currency, quote_currency) do nothing
                 """,
                 [_fx_payload(record) for record in records],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+class PostgresUSDSink:
+    def __init__(self, connection_factory: Callable[[], SupportsConnection], config: PostgresSinkConfig | None = None):
+        self._connection_factory = connection_factory
+        self._config = config or PostgresSinkConfig()
+
+    def write_usd_transactions(self, records: list[USDNormalizedTransaction]) -> None:
+        if not records:
+            return
+        conn = self._connection_factory()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                create schema if not exists treasury
+                """
+            )
+            cur.execute(
+                f"""
+                create table if not exists {self._config.usd_table} (
+                    transaction_id text not null primary key,
+                    "timestamp" timestamp not null,
+                    legal_entity_id text not null,
+                    currency char(3) not null,
+                    amount numeric(20, 6) not null,
+                    direction treasury.transaction_direction not null,
+                    fx_rate_applied numeric(20, 10) not null,
+                    amount_usd numeric(20, 6) not null,
+                    created_at_utc timestamp not null default (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
+                    constraint usd_currency_chk check (currency = upper(currency)),
+                    constraint usd_amount_chk check (amount >= 0),
+                    constraint usd_fx_rate_chk check (fx_rate_applied > 0),
+                    constraint usd_amount_usd_chk check (amount_usd >= 0),
+                    constraint usd_transaction_fk foreign key (transaction_id)
+                        references treasury.transactions (transaction_id)
+                        on delete cascade
+                )
+                """
+            )
+            cur.executemany(
+                f"""
+                insert into {self._config.usd_table}
+                (transaction_id, "timestamp", legal_entity_id, currency, amount, direction, fx_rate_applied, amount_usd)
+                values (%s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (transaction_id) do nothing
+                """,
+                [_usd_payload(record) for record in records],
             )
             conn.commit()
         finally:

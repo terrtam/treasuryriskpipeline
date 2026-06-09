@@ -52,6 +52,32 @@ CREATE INDEX IF NOT EXISTS transactions_entity_ts_idx
 CREATE INDEX IF NOT EXISTS transactions_currency_ts_idx
     ON treasury.transactions (currency, "timestamp" DESC);
 
+CREATE TABLE IF NOT EXISTS treasury.usd (
+    transaction_id       text                    NOT NULL,
+    "timestamp"         timestamp               NOT NULL,
+    legal_entity_id      text                    NOT NULL,
+    currency             char(3)                 NOT NULL,
+    amount               numeric(20, 6)          NOT NULL,
+    direction            treasury.transaction_direction NOT NULL,
+    fx_rate_applied      numeric(20, 10)         NOT NULL,
+    amount_usd           numeric(20, 6)          NOT NULL,
+    created_at_utc       timestamp               NOT NULL DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
+    CONSTRAINT usd_pk PRIMARY KEY (transaction_id),
+    CONSTRAINT usd_currency_chk CHECK (currency = upper(currency)),
+    CONSTRAINT usd_amount_chk CHECK (amount >= 0),
+    CONSTRAINT usd_fx_rate_chk CHECK (fx_rate_applied > 0),
+    CONSTRAINT usd_amount_usd_chk CHECK (amount_usd >= 0),
+    CONSTRAINT usd_transaction_fk FOREIGN KEY (transaction_id)
+        REFERENCES treasury.transactions (transaction_id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS usd_entity_ts_idx
+    ON treasury.usd (legal_entity_id, "timestamp" DESC);
+
+CREATE INDEX IF NOT EXISTS usd_currency_ts_idx
+    ON treasury.usd (currency, "timestamp" DESC);
+
 CREATE TABLE IF NOT EXISTS treasury.fx_rates (
     date              date                    NOT NULL,
     base_currency     char(3)                 NOT NULL DEFAULT 'USD',
