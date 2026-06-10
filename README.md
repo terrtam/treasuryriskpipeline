@@ -169,23 +169,23 @@ python -m src.data_generation
 5. Run ingestion.
 
 ```bash
-python -m src.ingestion data_feeds --run-id ("daily-" + (Get-Date -Format yyyyMMdd)) --pipeline-version 1.0.0 --dataset-version demo-2026-01-01-v1
+python -m src.ingestion data_feeds --business-date 2026-06-07
 ```
 
-For a daily scheduled run, let the pipeline use the current UTC timestamp by default:
+For a different business date, change only the `--business-date` value:
 
-```powershell
-python -m src.ingestion data_feeds --run-id ("daily-" + (Get-Date -Format yyyyMMdd)) --pipeline-version 1.0.0 --dataset-version demo-2026-01-01-v1
+```bash
+python -m src.ingestion data_feeds --business-date 2026-06-08
 ```
 
 For a backfill rerun, point the command at a folder that contains only the historical day you want to replay, or pass a single Parquet file:
 
 ```powershell
-python -m src.ingestion .\backfill_20260607 --run-id daily-20260607-rerun1 --pipeline-version 1.0.0 --dataset-version demo-2026-01-01-v1
+python -m src.ingestion .\backfill_20260607 --business-date 2026-06-07
 ```
 
 ```powershell
-python -m src.ingestion .\backfill_20260607\daily_transactions_20260607.parquet --run-id daily-20260607-rerun1 --pipeline-version 1.0.0 --dataset-version demo-2026-01-01-v1
+python -m src.ingestion .\backfill_20260607\daily_transactions_20260607.parquet --business-date 2026-06-07
 ```
 
 The pipeline reads PostgreSQL and Elasticsearch settings from environment variables or a local `.env` file.

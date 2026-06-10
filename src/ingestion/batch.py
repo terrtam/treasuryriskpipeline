@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
-from .audit import AuditEvent, build_file_failure_event, build_rejection_audit_events, build_snapshot_written_audit_events
+from .audit import (
+    AuditEvent,
+    build_file_failure_event,
+    build_rejection_audit_events,
+    build_snapshot_written_audit_events,
+    build_transaction_processed_audit_events,
+)
 from src.fx.conversion import FxDatasetError, convert_transactions_to_usd
 from src.liquidity import aggregate_liquidity_snapshots
 from .rejections import RejectionReport
 from .sinks import IngestionSinks, create_default_ingestion_sinks
-from .validator import IngestionBatchResult, ingest_fx_files, ingest_transaction_files
+from .validator import IngestionBatchResult, ingest_fx_files, ingest_transaction_error_files, ingest_transaction_files
 
 
 @dataclass(frozen=True)
@@ -18,6 +24,7 @@ class IngestionBatchConfig:
     run_id: str
     pipeline_version: str
     dataset_version: str
+    business_date: date | None = None
     processing_timestamp_utc: datetime | None = None
 
     def resolved_processing_timestamp_utc(self) -> datetime:
@@ -73,16 +80,19 @@ def run_ingestion_batch(
 
     if data_feeds_dir.is_file():
         if "daily_transactions_" in data_feeds_dir.name:
-            transaction_batch = ingest_transaction_files(data_feeds_dir)
+            transaction_batch = ingest_transaction_files(data_feeds_dir, config.business_date)
+            transaction_error_batch = _empty_batch()
             fx_batch = _empty_batch()
         elif "fx_rates_" in data_feeds_dir.name:
             transaction_batch = _empty_batch()
-            fx_batch = ingest_fx_files(data_feeds_dir)
+            transaction_error_batch = _empty_batch()
+            fx_batch = ingest_fx_files(data_feeds_dir, config.business_date)
         else:
             raise ValueError(f"unable to infer dataset type from file name: {data_feeds_dir.name}")
     else:
-        transaction_batch = ingest_transaction_files(data_feeds_dir)
-        fx_batch = ingest_fx_files(data_feeds_dir)
+        transaction_batch = ingest_transaction_files(data_feeds_dir, config.business_date)
+        transaction_error_batch = ingest_transaction_error_files(data_feeds_dir, config.business_date)
+        fx_batch = ingest_fx_files(data_feeds_dir, config.business_date)
 
     usd_batch = _empty_batch()
     liquidity_batch = _empty_batch()
@@ -130,8 +140,26 @@ def run_ingestion_batch(
             )
 
     audit_events = [
+        *build_transaction_processed_audit_events(
+            transaction_batch.records,
+            run_id=config.run_id,
+            pipeline_version=config.pipeline_version,
+            dataset_version=config.dataset_version,
+            processing_timestamp_utc=processing_timestamp_utc,
+            source_file=None,
+        ),
         *build_rejection_audit_events(
             transaction_batch.rejections,
+            run_id=config.run_id,
+            pipeline_version=config.pipeline_version,
+            dataset_version=config.dataset_version,
+            source_file=None,
+            processing_timestamp_utc=processing_timestamp_utc,
+            event_type="transaction_rejected",
+            status="REJECTED",
+        ),
+        *build_rejection_audit_events(
+            transaction_error_batch.rejections,
             run_id=config.run_id,
             pipeline_version=config.pipeline_version,
             dataset_version=config.dataset_version,

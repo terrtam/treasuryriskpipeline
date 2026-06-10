@@ -111,6 +111,57 @@ def _build_rejection_event(
     )
 
 
+def build_transaction_processed_audit_events(
+    transactions: list[Any],
+    *,
+    run_id: str,
+    pipeline_version: str,
+    dataset_version: str,
+    processing_timestamp_utc: datetime,
+    source_file: str | None = None,
+) -> list[AuditEvent]:
+    events: list[AuditEvent] = []
+    for transaction in transactions:
+        transaction_id = transaction.transaction_id if isinstance(transaction.transaction_id, str) else None
+        legal_entity_id = transaction.legal_entity_id if isinstance(transaction.legal_entity_id, str) else None
+        currency = transaction.currency if isinstance(transaction.currency, str) else None
+        direction = transaction.direction if isinstance(transaction.direction, str) else None
+        event_id = _make_event_id(
+            run_id,
+            pipeline_version,
+            dataset_version,
+            source_file or "",
+            transaction_id or "",
+            legal_entity_id or "",
+            "transaction_processed",
+        )
+        events.append(
+            AuditEvent(
+                event_id=event_id,
+                event_type="transaction_processed",
+                run_id=run_id,
+                pipeline_version=pipeline_version,
+                dataset_version=dataset_version,
+                source_file=source_file,
+                transaction_id=transaction_id,
+                legal_entity_id=legal_entity_id,
+                event_timestamp_utc=_utc_datetime(transaction.timestamp, processing_timestamp_utc),
+                processing_timestamp_utc=processing_timestamp_utc,
+                currency=currency,
+                amount_original=transaction.amount if isinstance(transaction.amount, Decimal) else None,
+                fx_rate_applied=None,
+                amount_usd=None,
+                direction=direction,
+                window_start_utc=None,
+                window_end_utc=None,
+                status="SUCCESS",
+                error_code=None,
+                error_message=None,
+            )
+        )
+    return events
+
+
 def build_rejection_audit_events(
     rejection_report: RejectionReport,
     *,

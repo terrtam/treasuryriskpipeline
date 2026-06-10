@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 import re
@@ -14,8 +14,9 @@ from .rejections import RejectionReport
 
 ISO_4217_PATTERN = re.compile(r"^[A-Z]{3}$")
 VALID_DIRECTIONS = {"INBOUND", "OUTBOUND"}
-TRANSACTION_FILE_PATTERN = "daily_transactions_*.parquet"
-FX_FILE_PATTERN = "fx_rates_*.parquet"
+TRANSACTION_FILE_PATTERN = re.compile(r"^daily_transactions_(\d{8})\.parquet$")
+TRANSACTION_ERROR_FILE_PATTERN = re.compile(r"^daily_transactions_errors_(\d{8})\.parquet$")
+FX_FILE_PATTERN = re.compile(r"^fx_rates_(\d{8})\.parquet$")
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,25 @@ class IngestionBatchResult:
     file_errors: list[str]
     file_error_sources: list[tuple[str, str]] = field(default_factory=list)
     status: str = "SUCCESS"
+
+
+def _parse_business_date(path: Path, pattern: re.Pattern[str]) -> date | None:
+    match = pattern.match(path.name)
+    if not match:
+        return None
+    return datetime.strptime(match.group(1), "%Y%m%d").date()
+
+
+def _is_transaction_file(path: Path) -> bool:
+    return path.name.startswith("daily_transactions_") and path.name.endswith(".parquet") and not path.name.startswith("daily_transactions_errors_")
+
+
+def _is_transaction_error_file(path: Path) -> bool:
+    return path.name.startswith("daily_transactions_errors_") and path.name.endswith(".parquet")
+
+
+def _is_fx_file(path: Path) -> bool:
+    return path.name.startswith("fx_rates_") and path.name.endswith(".parquet")
 
 
 def _parse_timestamp(value: Any) -> datetime:
@@ -88,12 +108,56 @@ def _validate_direction(value: Any) -> str:
     return value
 
 
-def discover_ingestion_files(data_feeds_dir: str | Path, dataset: str) -> list[Path]:
+def discover_ingestion_files(data_feeds_dir: str | Path, dataset: str, business_date: date | None = None) -> list[Path]:
     root = Path(data_feeds_dir)
-    pattern = TRANSACTION_FILE_PATTERN if dataset == "transactions" else FX_FILE_PATTERN
     if root.is_file():
-        return [root] if root.match(pattern) else []
-    return sorted(root.glob(pattern))
+        if dataset == "transactions" and not _is_transaction_file(root):
+            return []
+        if dataset == "fx" and not _is_fx_file(root):
+            return []
+        pattern = TRANSACTION_FILE_PATTERN if dataset == "transactions" else FX_FILE_PATTERN
+        file_date = _parse_business_date(root, pattern)
+        if business_date is not None and file_date != business_date:
+            return []
+        return [root]
+
+    matches: list[Path] = []
+    for file_path in sorted(root.iterdir()):
+        if not file_path.is_file():
+            continue
+        if dataset == "transactions" and not _is_transaction_file(file_path):
+            continue
+        if dataset == "fx" and not _is_fx_file(file_path):
+            continue
+        pattern = TRANSACTION_FILE_PATTERN if dataset == "transactions" else FX_FILE_PATTERN
+        file_date = _parse_business_date(file_path, pattern)
+        if business_date is not None and file_date != business_date:
+            continue
+        if business_date is not None and file_date is None:
+            continue
+        matches.append(file_path)
+    return matches
+
+
+def discover_transaction_error_files(data_feeds_dir: str | Path, business_date: date | None = None) -> list[Path]:
+    root = Path(data_feeds_dir)
+    if root.is_file():
+        if not _is_transaction_error_file(root):
+            return []
+        file_date = _parse_business_date(root, TRANSACTION_ERROR_FILE_PATTERN)
+        if business_date is not None and file_date != business_date:
+            return []
+        return [root]
+
+    matches: list[Path] = []
+    for file_path in sorted(root.iterdir()):
+        if not file_path.is_file() or not _is_transaction_error_file(file_path):
+            continue
+        file_date = _parse_business_date(file_path, TRANSACTION_ERROR_FILE_PATTERN)
+        if business_date is not None and file_date != business_date:
+            continue
+        matches.append(file_path)
+    return matches
 
 
 def load_parquet_rows(path: str | Path) -> list[dict[str, Any]]:
@@ -139,8 +203,8 @@ def _derive_fx_status(valid_row_count: int, rejection_count: int, file_error_cou
     return "FAILED"
 
 
-def ingest_transaction_files(data_feeds_dir: str | Path) -> IngestionBatchResult:
-    rows, file_errors, file_error_sources = _collect_rows(discover_ingestion_files(data_feeds_dir, "transactions"))
+def ingest_transaction_files(data_feeds_dir: str | Path, business_date: date | None = None) -> IngestionBatchResult:
+    rows, file_errors, file_error_sources = _collect_rows(discover_ingestion_files(data_feeds_dir, "transactions", business_date))
     records, rejections = validate_transaction_batch(rows)
     status = _derive_transaction_status(len(records), len(rejections), len(file_errors))
     return IngestionBatchResult(
@@ -152,10 +216,23 @@ def ingest_transaction_files(data_feeds_dir: str | Path) -> IngestionBatchResult
     )
 
 
-def ingest_fx_files(data_feeds_dir: str | Path) -> IngestionBatchResult:
-    rows, file_errors, file_error_sources = _collect_rows(discover_ingestion_files(data_feeds_dir, "fx"))
+def ingest_fx_files(data_feeds_dir: str | Path, business_date: date | None = None) -> IngestionBatchResult:
+    rows, file_errors, file_error_sources = _collect_rows(discover_ingestion_files(data_feeds_dir, "fx", business_date))
     records, rejections = validate_fx_batch(rows)
     status = _derive_fx_status(len(records), len(rejections), len(file_errors))
+    return IngestionBatchResult(
+        records=records,
+        rejections=rejections,
+        file_errors=file_errors,
+        file_error_sources=file_error_sources,
+        status=status,
+    )
+
+
+def ingest_transaction_error_files(data_feeds_dir: str | Path, business_date: date | None = None) -> IngestionBatchResult:
+    rows, file_errors, file_error_sources = _collect_rows(discover_transaction_error_files(data_feeds_dir, business_date))
+    records, rejections = validate_transaction_batch(rows)
+    status = _derive_transaction_status(len(records), len(rejections), len(file_errors))
     return IngestionBatchResult(
         records=records,
         rejections=rejections,
