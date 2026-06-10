@@ -67,6 +67,8 @@ class DataGenerationConfig:
     currency_count: int = 20
     transaction_files: int = 3
     fx_files: int = 3
+    transaction_error_files: int = 1
+    transaction_error_rows: int = 8
     generator_version: str = "1.0.0"
     dataset_version: str = "demo-2026-01-01-v1"
 
@@ -75,8 +77,10 @@ class DataGenerationConfig:
 class GeneratedDatasetManifest:
     output_dir: Path
     transaction_files: list[Path]
+    transaction_error_files: list[Path]
     fx_files: list[Path]
     transaction_count: int
+    transaction_error_count: int
     fx_row_count: int
 
 
@@ -93,6 +97,10 @@ def _validate_config(config: DataGenerationConfig) -> None:
         raise ValueError("transaction_files must be positive")
     if config.fx_files <= 0:
         raise ValueError("fx_files must be positive")
+    if config.transaction_error_files <= 0:
+        raise ValueError("transaction_error_files must be positive")
+    if config.transaction_error_rows <= 0:
+        raise ValueError("transaction_error_rows must be positive")
 
 
 def _currency_universe(currency_count: int) -> list[str]:
@@ -117,6 +125,10 @@ def _make_timestamp(day: date, rng: random.Random) -> datetime:
 
 def _weighted_choices(values: list[str], weights: list[int], rng: random.Random) -> str:
     return rng.choices(values, weights=weights, k=1)[0]
+
+
+def _quantize_decimal(value: Decimal, scale: str) -> Decimal:
+    return value.quantize(Decimal(scale))
 
 
 def _transaction_rows(config: DataGenerationConfig) -> list[dict[str, object]]:
@@ -155,6 +167,99 @@ def _transaction_rows(config: DataGenerationConfig) -> list[dict[str, object]]:
 
     rows.sort(key=lambda row: (row["timestamp"], row["legal_entity_id"], row["transaction_id"]))
     return rows
+
+
+def _transaction_error_rows(
+    config: DataGenerationConfig,
+    transaction_rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    if not transaction_rows:
+        return []
+
+    reference_row = transaction_rows[0]
+    rng = random.Random(config.seed + 19)
+    error_rows: list[dict[str, object]] = []
+    base_timestamp = reference_row["timestamp"]
+    base_currency = reference_row["currency"]
+    base_entity = reference_row["legal_entity_id"]
+    base_amount = reference_row["amount"]
+    base_direction = reference_row["direction"]
+
+    templates = [
+        {
+            "transaction_id": reference_row["transaction_id"],
+            "timestamp": base_timestamp,
+            "legal_entity_id": base_entity,
+            "currency": base_currency,
+            "amount": base_amount,
+            "direction": "SIDEWAYS",
+        },
+        {
+            "transaction_id": None,
+            "timestamp": base_timestamp,
+            "legal_entity_id": base_entity,
+            "currency": base_currency,
+            "amount": base_amount,
+            "direction": base_direction,
+        },
+        {
+            "transaction_id": f"TX-ERR-{config.seed:04d}-03",
+            "timestamp": None,
+            "legal_entity_id": base_entity,
+            "currency": "US",
+            "amount": base_amount,
+            "direction": base_direction,
+        },
+        {
+            "transaction_id": f"TX-ERR-{config.seed:04d}-04",
+            "timestamp": base_timestamp,
+            "legal_entity_id": None,
+            "currency": base_currency,
+            "amount": -abs(base_amount),
+            "direction": base_direction,
+        },
+        {
+            "transaction_id": reference_row["transaction_id"],
+            "timestamp": base_timestamp + timedelta(minutes=1),
+            "legal_entity_id": base_entity,
+            "currency": base_currency,
+            "amount": base_amount,
+            "direction": base_direction,
+        },
+        {
+            "transaction_id": f"TX-ERR-{config.seed:04d}-06",
+            "timestamp": base_timestamp + timedelta(minutes=2),
+            "legal_entity_id": base_entity,
+            "currency": base_currency,
+            "amount": base_amount,
+            "direction": "IN",
+        },
+        {
+            "transaction_id": f"TX-ERR-{config.seed:04d}-07",
+            "timestamp": base_timestamp + timedelta(minutes=3),
+            "legal_entity_id": "",
+            "currency": base_currency,
+            "amount": base_amount,
+            "direction": base_direction,
+        },
+        {
+            "transaction_id": f"TX-ERR-{config.seed:04d}-08",
+            "timestamp": base_timestamp + timedelta(minutes=4),
+            "legal_entity_id": base_entity,
+            "currency": "usd",
+            "amount": Decimal("0.000000"),
+            "direction": base_direction,
+        },
+    ]
+
+    for index in range(config.transaction_error_rows):
+        template = dict(templates[index % len(templates)])
+        if template["transaction_id"] is not None and index >= len(templates):
+            template["transaction_id"] = f"{template['transaction_id']}-{rng.randint(100, 999)}"
+        error_rows.append(template)
+
+    error_rows.sort(key=lambda row: (row["timestamp"] is None, row["timestamp"], str(row["transaction_id"])))
+    return error_rows
 
 
 def _fx_rows(config: DataGenerationConfig) -> list[dict[str, object]]:
@@ -210,6 +315,7 @@ def generate_demo_datasets(config: DataGenerationConfig) -> GeneratedDatasetMani
     output_dir.mkdir(parents=True, exist_ok=True)
 
     transaction_rows = _transaction_rows(config)
+    transaction_error_rows = _transaction_error_rows(config, transaction_rows)
     fx_rows = _fx_rows(config)
 
     transaction_files: list[Path] = []
@@ -217,6 +323,12 @@ def generate_demo_datasets(config: DataGenerationConfig) -> GeneratedDatasetMani
         path = output_dir / f"daily_transactions_{index:03d}.parquet"
         _atomic_write_parquet(rows, TRANSACTION_SCHEMA, path)
         transaction_files.append(path)
+
+    transaction_error_files: list[Path] = []
+    for index, rows in enumerate(_split_rows(transaction_error_rows, config.transaction_error_files), start=1):
+        path = output_dir / f"daily_transactions_errors_{index:03d}.parquet"
+        _atomic_write_parquet(rows, TRANSACTION_SCHEMA, path)
+        transaction_error_files.append(path)
 
     fx_files: list[Path] = []
     for index, rows in enumerate(_split_rows(fx_rows, config.fx_files), start=1):
@@ -227,7 +339,9 @@ def generate_demo_datasets(config: DataGenerationConfig) -> GeneratedDatasetMani
     return GeneratedDatasetManifest(
         output_dir=output_dir,
         transaction_files=transaction_files,
+        transaction_error_files=transaction_error_files,
         fx_files=fx_files,
         transaction_count=len(transaction_rows),
+        transaction_error_count=len(transaction_error_rows),
         fx_row_count=len(fx_rows),
     )

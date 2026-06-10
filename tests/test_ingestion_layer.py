@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
 from src.ingestion import (
     AuditEvent,
@@ -26,6 +27,7 @@ from src.ingestion.batch import IngestionBatchConfig, run_ingestion_batch
 from src.ingestion.cli import build_production_sinks
 from src.ingestion.external_sinks import (
     ElasticsearchAuditSink,
+    ElasticsearchSinkConfig,
     PostgresAuditSink,
     PostgresFXSink,
     PostgresLiquiditySink,
@@ -58,6 +60,20 @@ class RecordingConnection:
 
     def close(self):
         self.closed = True
+
+
+class ElasticsearchResponse:
+    def __init__(self, status: int, body: dict | str | None = None):
+        self.status = status
+        if body is None:
+            self._body = b""
+        elif isinstance(body, str):
+            self._body = body.encode("utf-8")
+        else:
+            self._body = json.dumps(body).encode("utf-8")
+
+    def read(self):
+        return self._body
 
 
 def test_fx_duplicate_key_rejection():
@@ -323,7 +339,7 @@ def test_postgres_liquidity_sink_records_payloads():
     assert any("treasury.liquidity_snapshots" in statement[0] for statement in connection.cursor_obj.statements)
 
 
-def test_postgres_and_elasticsearch_sink_adapters_record_payloads():
+def test_postgres_and_elasticsearch_sink_adapters_record_payloads(tmp_path):
     connection = RecordingConnection()
     txn_sink = PostgresTransactionSink(lambda: connection)
     fx_sink = PostgresFXSink(lambda: connection)
@@ -386,16 +402,26 @@ def test_postgres_and_elasticsearch_sink_adapters_record_payloads():
 
     def opener(req):
         es_requests.append(req)
+        if req.method in {"HEAD", "PUT"}:
+            if req.method == "HEAD":
+                return ElasticsearchResponse(404)
+            return ElasticsearchResponse(200, {"acknowledged": True})
 
-        class Response:
-            status = 200
+        return ElasticsearchResponse(
+            200,
+            {
+                "errors": False,
+                "items": [
+                    {"index": {"status": 201, "_id": "event-1"}},
+                ],
+            },
+        )
 
-            def read(self):
-                return json.dumps({"errors": False}).encode("utf-8")
-
-        return Response()
-
-    audit_sink = ElasticsearchAuditSink("http://localhost:9200", opener=opener)
+    audit_sink = ElasticsearchAuditSink(
+        "http://localhost:9200",
+        config=ElasticsearchSinkConfig(failure_log_path=tmp_path / "test-elasticsearch-failures.jsonl"),
+        opener=opener,
+    )
     audit_sink.write_audit_events(
         [
             type(
@@ -428,6 +454,87 @@ def test_postgres_and_elasticsearch_sink_adapters_record_payloads():
     )
 
     assert es_requests
+    assert es_requests[0].method == "HEAD"
+    assert es_requests[1].method == "PUT"
+    assert es_requests[2].method == "POST"
+    bulk_payload = es_requests[2].data.decode("utf-8").strip().splitlines()
+    assert bulk_payload[0] == json.dumps({"index": {"_id": "event-1", "_index": "treasury_audit_logs"}}, sort_keys=True)
+    assert json.loads(bulk_payload[1])["event_id"] == "event-1"
+    assert not (tmp_path / "test-elasticsearch-failures.jsonl").exists()
+
+
+def test_elasticsearch_sink_logs_partial_failures(tmp_path):
+    failure_log_path = tmp_path / "es" / "audit-failures.jsonl"
+    es_requests = []
+
+    def opener(req):
+        es_requests.append(req)
+        if req.method == "HEAD":
+            return ElasticsearchResponse(404)
+        if req.method == "PUT":
+            return ElasticsearchResponse(200, {"acknowledged": True})
+        return ElasticsearchResponse(
+            200,
+            {
+                "errors": True,
+                "items": [
+                    {
+                        "index": {
+                            "status": 409,
+                            "_id": "event-1",
+                            "error": {"type": "version_conflict_engine_exception", "reason": "conflict"},
+                        }
+                    }
+                ],
+            },
+        )
+
+    sink = ElasticsearchAuditSink(
+        "http://localhost:9200",
+        config=ElasticsearchSinkConfig(failure_log_path=failure_log_path),
+        opener=opener,
+    )
+
+    with pytest.raises(RuntimeError, match="elasticsearch bulk write reported errors"):
+        sink.write_audit_events(
+            [
+                type(
+                    "Event",
+                    (),
+                    {
+                        "event_id": "event-1",
+                        "event_type": "transaction_rejected",
+                        "run_id": "run-1",
+                        "pipeline_version": "1.0.0",
+                        "dataset_version": "2026-06-07",
+                        "source_file": None,
+                        "transaction_id": "T1",
+                        "legal_entity_id": "LE1",
+                        "event_timestamp_utc": datetime(2026, 6, 7, 10, 0, tzinfo=timezone.utc),
+                        "processing_timestamp_utc": datetime(2026, 6, 7, 12, 0, tzinfo=timezone.utc),
+                        "currency": "USD",
+                        "amount_original": Decimal("10.00"),
+                        "fx_rate_applied": None,
+                        "amount_usd": None,
+                        "direction": "INBOUND",
+                        "window_start_utc": None,
+                        "window_end_utc": None,
+                        "status": "REJECTED",
+                        "error_code": "INGESTION_REJECTION",
+                        "error_message": "bad row",
+                    },
+                )()
+            ]
+        )
+
+    assert es_requests[0].method == "HEAD"
+    assert es_requests[1].method == "PUT"
+    assert es_requests[2].method == "POST"
+    assert failure_log_path.exists()
+    logged = json.loads(failure_log_path.read_text(encoding="utf-8").strip())
+    assert logged["write_status"] == "PARTIAL"
+    assert logged["target_index"] == "treasury_audit_logs"
+    assert logged["event_ids"] == ["event-1"]
 
 
 def test_transaction_validation_rejects_invalid_direction():

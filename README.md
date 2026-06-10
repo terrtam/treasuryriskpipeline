@@ -239,6 +239,7 @@ TreasuryPipeline/
 │
 ├── data_feeds/  
 │   ├── daily_transactions_*.parquet   # Synthetic transaction dataset (demo-scale)
+│   ├── daily_transactions_errors_*.parquet  # Invalid transaction rows to exercise rejection handling
 │   ├── fx_rates_*.parquet             # FX reference lookup table
 │
 ├── src/

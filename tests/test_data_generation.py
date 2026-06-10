@@ -5,6 +5,7 @@ from datetime import date
 
 from src.data_generation import DataGenerationConfig, generate_demo_datasets
 from src.ingestion import InMemoryAuditSink, InMemoryFXSink, InMemoryLiquiditySink, InMemoryUSDSink, InMemoryTransactionSink, IngestionSinks, ingest_fx_files, ingest_transaction_files
+from src.ingestion import load_parquet_rows
 from src.ingestion.batch import IngestionBatchConfig, run_ingestion_batch
 
 
@@ -27,8 +28,10 @@ def test_generate_demo_datasets_is_reproducible(tmp_path):
 
     assert first.transaction_count == second.transaction_count == 120
     assert first.fx_row_count == second.fx_row_count == 225
+    assert first.transaction_error_count == second.transaction_error_count
     assert [path.name for path in first.transaction_files] == ["daily_transactions_001.parquet", "daily_transactions_002.parquet"]
     assert [path.name for path in first.fx_files] == ["fx_rates_001.parquet", "fx_rates_002.parquet"]
+    assert [path.name for path in first.transaction_error_files] == ["daily_transactions_errors_001.parquet"]
 
     first_txn = ingest_transaction_files(first.output_dir)
     second_txn = ingest_transaction_files(second.output_dir)
@@ -37,6 +40,15 @@ def test_generate_demo_datasets_is_reproducible(tmp_path):
 
     assert first_txn.records == second_txn.records
     assert first_fx.records == second_fx.records
+
+    first_error_rows = load_parquet_rows(first.transaction_error_files[0])
+    second_error_rows = load_parquet_rows(second.transaction_error_files[0])
+
+    assert first_error_rows == second_error_rows
+    assert any(row["transaction_id"] is None for row in first_error_rows)
+    assert any(row["direction"] == "SIDEWAYS" for row in first_error_rows)
+    assert any(row["currency"] == "US" for row in first_error_rows)
+    assert any(row["legal_entity_id"] is None for row in first_error_rows)
 
 
 def test_generated_inputs_drive_liquidity_snapshots(tmp_path):
@@ -51,6 +63,8 @@ def test_generated_inputs_drive_liquidity_snapshots(tmp_path):
             currency_count=6,
             transaction_files=2,
             fx_files=2,
+            transaction_error_files=1,
+            transaction_error_rows=8,
             dataset_version="demo-liquidity",
         )
     )

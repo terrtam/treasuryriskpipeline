@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import os
 
 from .env import load_env_file
@@ -30,6 +31,7 @@ class DatabaseConfig:
 class ElasticsearchConfig:
     base_url: str
     index_name: str = "treasury_audit_logs"
+    failure_log_path: Path = Path("logs/elasticsearch_audit_failures.jsonl")
 
 
 def load_elasticsearch_config() -> ElasticsearchConfig:
@@ -37,6 +39,7 @@ def load_elasticsearch_config() -> ElasticsearchConfig:
     return ElasticsearchConfig(
         base_url=os.getenv("ELASTICSEARCH_URL", "http://localhost:9200"),
         index_name=os.getenv("ELASTICSEARCH_INDEX", "treasury_audit_logs"),
+        failure_log_path=Path(os.getenv("ELASTICSEARCH_FAILURE_LOG", "logs/elasticsearch_audit_failures.jsonl")),
     )
 
 

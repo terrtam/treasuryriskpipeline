@@ -18,6 +18,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--currencies", type=int, default=20, help="Number of currencies to synthesize")
     parser.add_argument("--transaction-files", type=int, default=3, help="Number of transaction parquet files")
     parser.add_argument("--fx-files", type=int, default=3, help="Number of FX parquet files")
+    parser.add_argument("--transaction-error-files", type=int, default=1, help="Number of invalid transaction parquet files")
+    parser.add_argument("--transaction-error-rows", type=int, default=8, help="Number of invalid transaction rows to generate")
     parser.add_argument("--dataset-version", default="demo-2026-01-01-v1", help="Dataset version label")
     parser.add_argument("--generator-version", default="1.0.0", help="Generator version label")
     return parser.parse_args(argv)
@@ -35,11 +37,14 @@ def main(argv: list[str] | None = None) -> int:
         currency_count=args.currencies,
         transaction_files=args.transaction_files,
         fx_files=args.fx_files,
+        transaction_error_files=args.transaction_error_files,
+        transaction_error_rows=args.transaction_error_rows,
         generator_version=args.generator_version,
         dataset_version=args.dataset_version,
     )
     manifest = generate_demo_datasets(config)
     print(f"wrote {manifest.transaction_count} transaction rows to {len(manifest.transaction_files)} files")
+    print(f"wrote {manifest.transaction_error_count} invalid transaction rows to {len(manifest.transaction_error_files)} files")
     print(f"wrote {manifest.fx_row_count} fx rows to {len(manifest.fx_files)} files")
     return 0
 

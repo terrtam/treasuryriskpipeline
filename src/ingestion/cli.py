@@ -35,7 +35,10 @@ def build_production_sinks() -> IngestionSinks:
         connection_factory,
         es_config.base_url,
         postgres_config=postgres_config,
-        elasticsearch_config=ElasticsearchSinkConfig(index_name=es_config.index_name),
+        elasticsearch_config=ElasticsearchSinkConfig(
+            index_name=es_config.index_name,
+            failure_log_path=es_config.failure_log_path,
+        ),
     )
 
 
