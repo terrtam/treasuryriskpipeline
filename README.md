@@ -190,6 +190,16 @@ python -m src.ingestion .\backfill_20260607\daily_transactions_20260607.parquet 
 
 The pipeline reads PostgreSQL and Elasticsearch settings from environment variables or a local `.env` file.
 
+To remove Elasticsearch audit data by date range or to wipe the index entirely:
+
+```powershell
+python -m src.ingestion.es_cleanup --from-date 2026-06-01 --to-date 2026-06-07
+```
+
+```powershell
+python -m src.ingestion.es_cleanup --all
+```
+
 ## 8. Key Engineering Decisions
 
 * Date-keyed FX lookup with explicit validation that USD identity rates exist and equal `1.0`.
