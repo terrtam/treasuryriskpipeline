@@ -1,12 +1,24 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from src.data_generation import DataGenerationConfig, generate_demo_datasets
 from src.ingestion import InMemoryAuditSink, InMemoryFXSink, InMemoryLiquiditySink, InMemoryUSDSink, InMemoryTransactionSink, IngestionSinks, ingest_fx_files, ingest_transaction_files
 from src.ingestion import load_parquet_rows
 from src.ingestion.batch import IngestionBatchConfig, run_ingestion_batch
+
+
+def _business_days(start_date: date, days: int) -> list[date]:
+    return [
+        start_date + timedelta(days=offset)
+        for offset in range(days)
+        if (start_date + timedelta(days=offset)).weekday() < 5
+    ]
+
+
+def _date_from_filename(path_name: str) -> date:
+    return datetime.strptime(path_name.rsplit("_", 1)[-1].removesuffix(".parquet"), "%Y%m%d").date()
 
 
 def test_generate_demo_datasets_is_reproducible(tmp_path):
@@ -18,20 +30,23 @@ def test_generate_demo_datasets_is_reproducible(tmp_path):
         transaction_count=120,
         entity_count=6,
         currency_count=5,
-        transaction_files=2,
-        fx_files=2,
         dataset_version="demo-test",
     )
 
     first = generate_demo_datasets(config)
     second = generate_demo_datasets(replace(config, output_dir=tmp_path / "two"))
+    business_days = _business_days(config.start_date, config.days)
 
     assert first.transaction_count == second.transaction_count == 120
-    assert first.fx_row_count == second.fx_row_count == 225
+    assert first.fx_row_count == second.fx_row_count == len(business_days) * 5
     assert first.transaction_error_count == second.transaction_error_count
-    assert [path.name for path in first.transaction_files] == ["daily_transactions_001.parquet", "daily_transactions_002.parquet"]
-    assert [path.name for path in first.fx_files] == ["fx_rates_001.parquet", "fx_rates_002.parquet"]
-    assert [path.name for path in first.transaction_error_files] == ["daily_transactions_errors_001.parquet"]
+    assert [path.name for path in first.transaction_files] == [f"daily_transactions_{day:%Y%m%d}.parquet" for day in business_days]
+    assert [path.name for path in first.fx_files] == [f"fx_rates_{day:%Y%m%d}.parquet" for day in business_days]
+    assert [path.name for path in first.transaction_error_files] == [f"daily_transactions_errors_{day:%Y%m%d}.parquet" for day in business_days]
+
+    assert [path.name for path in first.transaction_files] == [path.name for path in second.transaction_files]
+    assert [path.name for path in first.fx_files] == [path.name for path in second.fx_files]
+    assert [path.name for path in first.transaction_error_files] == [path.name for path in second.transaction_error_files]
 
     first_txn = ingest_transaction_files(first.output_dir)
     second_txn = ingest_transaction_files(second.output_dir)
@@ -41,14 +56,54 @@ def test_generate_demo_datasets_is_reproducible(tmp_path):
     assert first_txn.records == second_txn.records
     assert first_fx.records == second_fx.records
 
-    first_error_rows = load_parquet_rows(first.transaction_error_files[0])
-    second_error_rows = load_parquet_rows(second.transaction_error_files[0])
+    for first_path, second_path in zip(first.transaction_files, second.transaction_files):
+        assert load_parquet_rows(first_path) == load_parquet_rows(second_path)
 
-    assert first_error_rows == second_error_rows
-    assert any(row["transaction_id"] is None for row in first_error_rows)
-    assert any(row["direction"] == "SIDEWAYS" for row in first_error_rows)
-    assert any(row["currency"] == "US" for row in first_error_rows)
-    assert any(row["legal_entity_id"] is None for row in first_error_rows)
+    for first_path, second_path in zip(first.fx_files, second.fx_files):
+        assert load_parquet_rows(first_path) == load_parquet_rows(second_path)
+
+    for first_path, second_path in zip(first.transaction_error_files, second.transaction_error_files):
+        assert load_parquet_rows(first_path) == load_parquet_rows(second_path)
+
+
+def test_generate_demo_datasets_uses_business_day_files_and_rows(tmp_path):
+    manifest = generate_demo_datasets(
+        DataGenerationConfig(
+            output_dir=tmp_path,
+            seed=11,
+            start_date=date(2026, 5, 1),
+            days=5,
+            transaction_count=20,
+            entity_count=4,
+            currency_count=4,
+            transaction_error_rows=4,
+            dataset_version="demo-business-days",
+        )
+    )
+
+    expected_days = _business_days(date(2026, 5, 1), 5)
+
+    assert [path.name for path in manifest.transaction_files] == [f"daily_transactions_{day:%Y%m%d}.parquet" for day in expected_days]
+    assert [path.name for path in manifest.transaction_error_files] == [f"daily_transactions_errors_{day:%Y%m%d}.parquet" for day in expected_days]
+    assert [path.name for path in manifest.fx_files] == [f"fx_rates_{day:%Y%m%d}.parquet" for day in expected_days]
+
+    for path in manifest.transaction_files:
+        file_date = _date_from_filename(path.name)
+        rows = load_parquet_rows(path)
+        assert file_date.weekday() < 5
+        assert all(row["timestamp"].date() == file_date for row in rows)
+
+    for path in manifest.fx_files:
+        file_date = _date_from_filename(path.name)
+        rows = load_parquet_rows(path)
+        assert file_date.weekday() < 5
+        assert all(row["date"] == file_date for row in rows)
+
+    for path in manifest.transaction_error_files:
+        file_date = _date_from_filename(path.name)
+        rows = load_parquet_rows(path)
+        assert file_date.weekday() < 5
+        assert all(row["timestamp"] is None or row["timestamp"].date() == file_date for row in rows)
 
 
 def test_generated_inputs_drive_liquidity_snapshots(tmp_path):
@@ -61,9 +116,6 @@ def test_generated_inputs_drive_liquidity_snapshots(tmp_path):
             transaction_count=160,
             entity_count=4,
             currency_count=6,
-            transaction_files=2,
-            fx_files=2,
-            transaction_error_files=1,
             transaction_error_rows=8,
             dataset_version="demo-liquidity",
         )

@@ -52,7 +52,7 @@ The repository also includes audit-event generation for rejected rows, file erro
 Files:
 
 ```text
-daily_transactions_*.parquet
+daily_transactions_YYYYMMDD.parquet
 ```
 
 Purpose: validated cash movement events used for USD conversion and liquidity aggregation.
@@ -71,7 +71,7 @@ Purpose: validated cash movement events used for USD conversion and liquidity ag
 Files:
 
 ```text
-fx_rates_*.parquet
+fx_rates_YYYYMMDD.parquet
 ```
 
 Purpose: daily FX lookup data keyed by date and currency.
@@ -169,7 +169,23 @@ python -m src.data_generation
 5. Run ingestion.
 
 ```bash
-python -m src.ingestion data_feeds --run-id run-001 --pipeline-version 1.0.0 --dataset-version demo-2026-01-01-v1
+python -m src.ingestion data_feeds --run-id ("daily-" + (Get-Date -Format yyyyMMdd)) --pipeline-version 1.0.0 --dataset-version demo-2026-01-01-v1
+```
+
+For a daily scheduled run, let the pipeline use the current UTC timestamp by default:
+
+```powershell
+python -m src.ingestion data_feeds --run-id ("daily-" + (Get-Date -Format yyyyMMdd)) --pipeline-version 1.0.0 --dataset-version demo-2026-01-01-v1
+```
+
+For a backfill rerun, point the command at a folder that contains only the historical day you want to replay, or pass a single Parquet file:
+
+```powershell
+python -m src.ingestion .\backfill_20260607 --run-id daily-20260607-rerun1 --pipeline-version 1.0.0 --dataset-version demo-2026-01-01-v1
+```
+
+```powershell
+python -m src.ingestion .\backfill_20260607\daily_transactions_20260607.parquet --run-id daily-20260607-rerun1 --pipeline-version 1.0.0 --dataset-version demo-2026-01-01-v1
 ```
 
 The pipeline reads PostgreSQL and Elasticsearch settings from environment variables or a local `.env` file.

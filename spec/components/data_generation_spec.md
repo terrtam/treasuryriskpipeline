@@ -6,7 +6,7 @@ The data generation module creates deterministic synthetic transaction and FX da
 It exists to replace external banking datasets with reproducible, versioned inputs that exercise the full pipeline end to end.
 
 ## Outputs
-The module produces two Parquet dataset families under `data_feeds/`.
+The module produces three Parquet dataset families under `data_feeds/`, one file per business day in the configured date window.
 
 ### Transaction Dataset
 | Field | Type | Requirements |
@@ -30,7 +30,8 @@ The module produces two Parquet dataset families under `data_feeds/`.
 - Generation must be deterministic for the same seed, generator version, and configuration.
 - Transaction and FX generation must be independent of external APIs or live market sources.
 - Currency coverage and entity activity must be realistic enough to exercise distributed processing behavior.
-- FX output must include explicit USD/USD = 1.0 rows for every date in scope.
+- Output files must be date-keyed and emitted only for business days in scope.
+- FX output must include explicit USD/USD = 1.0 rows for every business day in scope.
 - The generator must publish outputs atomically so partially written files are never treated as valid inputs.
 - The generator must not depend on Spark jobs for correctness.
 
@@ -41,7 +42,12 @@ The module produces two Parquet dataset families under `data_feeds/`.
 | Legal Entities | 25 |
 | Currencies | 20 |
 | Activity Window | 90 days |
-| FX Rates | Daily rates |
+| FX Rates | Business-day rates |
+
+## File Naming
+- Transaction files follow `daily_transactions_YYYYMMDD.parquet`.
+- Invalid transaction files follow `daily_transactions_errors_YYYYMMDD.parquet`.
+- FX files follow `fx_rates_YYYYMMDD.parquet`.
 
 ## Failure Behavior
 - If generation is rerun with the same seed and configuration, the logical dataset must remain identical.

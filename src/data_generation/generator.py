@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
-import math
 import random
 from uuid import uuid4
 
@@ -65,9 +64,6 @@ class DataGenerationConfig:
     transaction_count: int = 1500
     entity_count: int = 25
     currency_count: int = 20
-    transaction_files: int = 3
-    fx_files: int = 3
-    transaction_error_files: int = 1
     transaction_error_rows: int = 8
     generator_version: str = "1.0.0"
     dataset_version: str = "demo-2026-01-01-v1"
@@ -93,14 +89,10 @@ def _validate_config(config: DataGenerationConfig) -> None:
         raise ValueError("entity_count must be positive")
     if not 1 <= config.currency_count <= len(DEFAULT_CURRENCIES):
         raise ValueError("currency_count must be between 1 and 20")
-    if config.transaction_files <= 0:
-        raise ValueError("transaction_files must be positive")
-    if config.fx_files <= 0:
-        raise ValueError("fx_files must be positive")
-    if config.transaction_error_files <= 0:
-        raise ValueError("transaction_error_files must be positive")
     if config.transaction_error_rows <= 0:
         raise ValueError("transaction_error_rows must be positive")
+    if not _business_days(config.start_date, config.days):
+        raise ValueError("date window must include at least one business day")
 
 
 def _currency_universe(currency_count: int) -> list[str]:
@@ -131,21 +123,55 @@ def _quantize_decimal(value: Decimal, scale: str) -> Decimal:
     return value.quantize(Decimal(scale))
 
 
-def _transaction_rows(config: DataGenerationConfig) -> list[dict[str, object]]:
+def _business_days(start_date: date, days: int) -> list[date]:
+    return [
+        start_date + timedelta(days=day_offset)
+        for day_offset in range(days)
+        if (start_date + timedelta(days=day_offset)).weekday() < 5
+    ]
+
+
+def _transaction_day_weights(business_days: list[date]) -> list[int]:
+    weights: list[int] = []
+    for business_day in business_days:
+        if business_day.weekday() == 0:
+            weights.append(6)
+        elif business_day.weekday() == 4:
+            weights.append(7)
+        else:
+            weights.append(8)
+    return weights
+
+
+def _shift_timestamp_to_day(timestamp: datetime, day: date) -> datetime:
+    return datetime.combine(day, timestamp.timetz())
+
+
+def _transaction_rows_by_day(
+    config: DataGenerationConfig,
+    business_days: list[date],
+) -> dict[date, list[dict[str, object]]]:
     rng = random.Random(config.seed)
-    start_date = config.start_date
     currencies = _currency_universe(config.currency_count)
     entities = _entity_ids(config.entity_count)
 
-    day_weights = [8 if (index % 7) < 5 else 3 for index in range(config.days)]
+    day_weights = _transaction_day_weights(business_days)
     entity_weights = [25 - min(index, 20) if index < 5 else 5 for index in range(len(entities))]
     currency_weights = [12 if currency == "USD" else max(2, 20 - idx) for idx, currency in enumerate(currencies)]
     direction_weights = [58, 42]
 
-    rows: list[dict[str, object]] = []
-    for row_index in range(config.transaction_count):
-        day_index = rng.choices(range(config.days), weights=day_weights, k=1)[0]
-        transaction_day = start_date + timedelta(days=day_index)
+    rows_by_day: dict[date, list[dict[str, object]]] = {business_day: [] for business_day in business_days}
+
+    transaction_days: list[date] = []
+    if config.transaction_count >= len(business_days):
+        transaction_days.extend(business_days)
+        transaction_days.extend(
+            rng.choices(business_days, weights=day_weights, k=config.transaction_count - len(business_days))
+        )
+    else:
+        transaction_days.extend(rng.choices(business_days, weights=day_weights, k=config.transaction_count))
+
+    for row_index, transaction_day in enumerate(transaction_days):
         timestamp = _make_timestamp(transaction_day, rng)
         legal_entity_id = _weighted_choices(entities, entity_weights, rng)
         currency = _weighted_choices(currencies, currency_weights, rng)
@@ -154,7 +180,7 @@ def _transaction_rows(config: DataGenerationConfig) -> list[dict[str, object]]:
         base_cents = rng.randint(5_000, 5_000_000)
         amount = (Decimal(base_cents) / Decimal("100")).quantize(Decimal("0.000001"))
 
-        rows.append(
+        rows_by_day[transaction_day].append(
             {
                 "transaction_id": f"TX-{timestamp:%Y%m%d}-{row_index:07d}",
                 "timestamp": timestamp,
@@ -165,20 +191,24 @@ def _transaction_rows(config: DataGenerationConfig) -> list[dict[str, object]]:
             }
         )
 
-    rows.sort(key=lambda row: (row["timestamp"], row["legal_entity_id"], row["transaction_id"]))
-    return rows
+    for rows in rows_by_day.values():
+        rows.sort(key=lambda row: (row["timestamp"], row["legal_entity_id"], row["transaction_id"]))
+
+    return rows_by_day
 
 
 def _transaction_error_rows(
     config: DataGenerationConfig,
-    transaction_rows: list[dict[str, object]],
-) -> list[dict[str, object]]:
-    if not transaction_rows:
-        return []
+    transaction_rows_by_day: dict[date, list[dict[str, object]]],
+    business_days: list[date],
+) -> dict[date, list[dict[str, object]]]:
+    rows = [row for business_day in business_days for row in transaction_rows_by_day[business_day]]
+    if not rows:
+        return {business_day: [] for business_day in business_days}
 
-    reference_row = transaction_rows[0]
+    reference_row = rows[0]
     rng = random.Random(config.seed + 19)
-    error_rows: list[dict[str, object]] = []
+    error_rows_by_day: dict[date, list[dict[str, object]]] = {business_day: [] for business_day in business_days}
     base_timestamp = reference_row["timestamp"]
     base_currency = reference_row["currency"]
     base_entity = reference_row["legal_entity_id"]
@@ -253,21 +283,28 @@ def _transaction_error_rows(
     ]
 
     for index in range(config.transaction_error_rows):
+        assigned_day = business_days[index % len(business_days)]
         template = dict(templates[index % len(templates)])
         if template["transaction_id"] is not None and index >= len(templates):
             template["transaction_id"] = f"{template['transaction_id']}-{rng.randint(100, 999)}"
-        error_rows.append(template)
 
-    error_rows.sort(key=lambda row: (row["timestamp"] is None, row["timestamp"], str(row["transaction_id"])))
-    return error_rows
+        timestamp = template["timestamp"]
+        if isinstance(timestamp, datetime):
+            template["timestamp"] = _shift_timestamp_to_day(timestamp, assigned_day)
+
+        error_rows_by_day[assigned_day].append(template)
+
+    for rows in error_rows_by_day.values():
+        rows.sort(key=lambda row: (row["timestamp"] is None, row["timestamp"], str(row["transaction_id"])))
+
+    return error_rows_by_day
 
 
-def _fx_rows(config: DataGenerationConfig) -> list[dict[str, object]]:
+def _fx_rows_by_day(config: DataGenerationConfig, business_days: list[date]) -> dict[date, list[dict[str, object]]]:
     currencies = _currency_universe(config.currency_count)
-    rows: list[dict[str, object]] = []
+    rows_by_day: dict[date, list[dict[str, object]]] = {business_day: [] for business_day in business_days}
 
-    for day_index in range(config.days):
-        current_day = config.start_date + timedelta(days=day_index)
+    for day_index, current_day in enumerate(business_days):
         for currency_index, currency in enumerate(currencies):
             if currency == "USD":
                 rate = Decimal("1.0000000000")
@@ -281,7 +318,7 @@ def _fx_rows(config: DataGenerationConfig) -> list[dict[str, object]]:
                 if rate <= Decimal("0.1000"):
                     rate = Decimal("0.1000")
 
-            rows.append(
+            rows_by_day[current_day].append(
                 {
                     "date": current_day,
                     "base_currency": "USD",
@@ -290,8 +327,10 @@ def _fx_rows(config: DataGenerationConfig) -> list[dict[str, object]]:
                 }
             )
 
-    rows.sort(key=lambda row: (row["date"], row["quote_currency"]))
-    return rows
+    for rows in rows_by_day.values():
+        rows.sort(key=lambda row: (row["date"], row["quote_currency"]))
+
+    return rows_by_day
 
 
 def _atomic_write_parquet(rows: list[dict[str, object]], schema: pa.Schema, target_path: Path) -> None:
@@ -302,37 +341,34 @@ def _atomic_write_parquet(rows: list[dict[str, object]], schema: pa.Schema, targ
     temp_path.replace(target_path)
 
 
-def _split_rows(rows: list[dict[str, object]], file_count: int) -> list[list[dict[str, object]]]:
-    if not rows:
-        return [[] for _ in range(file_count)]
-    chunk_size = math.ceil(len(rows) / file_count)
-    return [rows[index : index + chunk_size] for index in range(0, len(rows), chunk_size)]
-
-
 def generate_demo_datasets(config: DataGenerationConfig) -> GeneratedDatasetManifest:
     _validate_config(config)
     output_dir = Path(config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    transaction_rows = _transaction_rows(config)
-    transaction_error_rows = _transaction_error_rows(config, transaction_rows)
-    fx_rows = _fx_rows(config)
+    business_days = _business_days(config.start_date, config.days)
+    transaction_rows_by_day = _transaction_rows_by_day(config, business_days)
+    transaction_error_rows_by_day = _transaction_error_rows(config, transaction_rows_by_day, business_days)
+    fx_rows_by_day = _fx_rows_by_day(config, business_days)
 
     transaction_files: list[Path] = []
-    for index, rows in enumerate(_split_rows(transaction_rows, config.transaction_files), start=1):
-        path = output_dir / f"daily_transactions_{index:03d}.parquet"
+    for business_day in business_days:
+        rows = transaction_rows_by_day[business_day]
+        path = output_dir / f"daily_transactions_{business_day:%Y%m%d}.parquet"
         _atomic_write_parquet(rows, TRANSACTION_SCHEMA, path)
         transaction_files.append(path)
 
     transaction_error_files: list[Path] = []
-    for index, rows in enumerate(_split_rows(transaction_error_rows, config.transaction_error_files), start=1):
-        path = output_dir / f"daily_transactions_errors_{index:03d}.parquet"
+    for business_day in business_days:
+        rows = transaction_error_rows_by_day[business_day]
+        path = output_dir / f"daily_transactions_errors_{business_day:%Y%m%d}.parquet"
         _atomic_write_parquet(rows, TRANSACTION_SCHEMA, path)
         transaction_error_files.append(path)
 
     fx_files: list[Path] = []
-    for index, rows in enumerate(_split_rows(fx_rows, config.fx_files), start=1):
-        path = output_dir / f"fx_rates_{index:03d}.parquet"
+    for business_day in business_days:
+        rows = fx_rows_by_day[business_day]
+        path = output_dir / f"fx_rates_{business_day:%Y%m%d}.parquet"
         _atomic_write_parquet(rows, FX_SCHEMA, path)
         fx_files.append(path)
 
@@ -341,7 +377,7 @@ def generate_demo_datasets(config: DataGenerationConfig) -> GeneratedDatasetMani
         transaction_files=transaction_files,
         transaction_error_files=transaction_error_files,
         fx_files=fx_files,
-        transaction_count=len(transaction_rows),
-        transaction_error_count=len(transaction_error_rows),
-        fx_row_count=len(fx_rows),
+        transaction_count=sum(len(rows) for rows in transaction_rows_by_day.values()),
+        transaction_error_count=sum(len(rows) for rows in transaction_error_rows_by_day.values()),
+        fx_row_count=sum(len(rows) for rows in fx_rows_by_day.values()),
     )
